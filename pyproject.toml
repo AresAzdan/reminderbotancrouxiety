@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "reminderbot-ares"
+version = "1.0.0"
+description = ""
+authors = ["Ares"]
+
+[tool.poetry.dependencies]
+python = ">=3.10.0,<3.12"
+discord-py = "^2.3.2"
+Flask = "^3.0.0"
+aiosqlite = "^0.19.0"
+pytz = "^2023.3.post1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+run = "python main.py"

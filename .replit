@@ -1,0 +1,48 @@
+language = "python3"
+entrypoint = "main.py"
+modules = ["python-3.11"]
+
+[unit]
+# Matikan auto-run supaya kamu bisa pakai Shell manual
+run = ""
+
+[env]
+# Tambah environment variable di sini kalau perlu
+PYTHONUNBUFFERED = "1"
+
+[nix]
+
+[[ports]]
+localPort = 5000
+externalPort = 5000
+
+[[ports]]
+localPort = 8081
+externalPort = 80
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Discord Bot"
+
+[[workflows.workflow]]
+name = "Discord Bot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python main.py"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[agent]
+expertMode = true
