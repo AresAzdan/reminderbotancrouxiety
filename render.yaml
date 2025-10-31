@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: reminderbotancrouxiety
+    env: python
+    buildCommand: 'poetry install'
+    startCommand: 'poetry run python main.py'
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
