@@ -303,6 +303,15 @@ async def cmd_rem(ctx, *, rest: str):
 
     else:
         at, kind, message = parsed
+    if len(parsed) == 3:
+    at, kind, message = parsed
+    elif len(parsed) == 2:
+    at, kind = parsed
+    message = None
+          else:
+            await ctx.send("Format perintah salah. Gunakan: rem!rem [waktu] [pesan]")
+            return
+
 
         # Cari posisi terakhir waktu/tanggal agar sisa teks jadi pesan
         match = time_regex.search(rest)
