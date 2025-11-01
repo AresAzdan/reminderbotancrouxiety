@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, time as dt_time
 import pytz
 from flask import Flask
 from threading import Thread
-
+app = Flask(__name__) 
 # -----------------------
 # Konfigurasi
 # -----------------------
