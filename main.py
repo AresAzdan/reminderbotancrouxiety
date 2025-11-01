@@ -297,7 +297,7 @@ if not parsed:
         kind = "one_time"
     # ✅ Tambahan penting — tandai parsed agar sistem tahu parsing berhasil
         parsed = (kind, at, message)
-    else:
+        else:
           await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
           return
       
