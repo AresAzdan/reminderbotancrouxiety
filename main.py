@@ -300,14 +300,12 @@ if not parsed:
     else:
           await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
           return
-
-    else:
-        at, kind, message = parsed
+      
     if len(parsed) == 3:
-    at, kind, message = parsed
+       at, kind, message = parsed
     elif len(parsed) == 2:
-    at, kind = parsed
-    message = None
+        at, kind = parsed
+        message = None
           else:
             await ctx.send("Format perintah salah. Gunakan: rem!rem [waktu] [pesan]")
             return
