@@ -270,33 +270,33 @@ async def cmd_rem(ctx, *, rest: str):
     rem!rem 08:30 minum air
     rem!rem 10 Oktober 18:00 ulang tahun
     rem!rem senin 08:00 olahraga
-    rem!rem 08:30,senin,rabu minum air  (if you type weekdays comma-separated after time)
+    rem!rem 08:30,senin,rabu minum air
     """
-    # Only allow in guild
     if ctx.guild is None:
         await ctx.send("❌ Gunakan di server (tidak di DM).")
         return
-    # split message into first token (time/date) and message
-    parts = rest.strip().split(maxsplit=1)
-    if not parts:
-        await ctx.send("❌ Format salah. Contoh: `rem!rem 08:30 minum air`")
-        return
-    time_part = parts[0]
-    message = parts[1] if len(parts) > 1 else ""
-    # allow user to supply weekdays with commas in same token: "08:30,senin,rabu"
-    if "," in time_part:
-        toks = time_part.split(",")
-        time_token = toks[0]
-        extra_days = toks[1:]
-        # rebuild rest_text for parser: time + extra_days
-        parser_input = time_token + " " + " ".join(extra_days)
-    else:
-        # if user typed "senin,rabu 08:30" or "10 Oktober 18:00" time may be inside; pass full rest
-        parser_input = rest
-    parsed = parse_date_flexible(parser_input)
+
+    # Parsing waktu dulu
+    parsed = parse_date_flexible(rest)
     if not parsed:
-        await ctx.send("❌ Gagal mengenali waktu. Gunakan format: `08:30`, `10 Oktober 18:00`, `Oktober 10 17:00`, atau `senin 08:00`.")
+        await ctx.send("❌ Gagal mengenali waktu. Contoh: `rem!rem 10 Oktober 20:00 meeting`")
         return
+
+    # Cari posisi terakhir waktu/tanggal agar sisa teks jadi pesan
+    match = time_regex.search(rest)
+    cut_index = match.end() if match else 0
+
+    # Tambah pencarian nama bulan
+    for month_name in MONTH_MAP.keys():
+        idx = re.search(rf"\b{month_name}\b", rest, re.IGNORECASE)
+        if idx:
+            cut_index = max(cut_index, idx.end())
+
+    # Ambil sisa kalimat setelah waktu/bulan
+    message = rest[cut_index:].strip()
+    if not message:
+        message = "(tanpa pesan)"
+
     kind = parsed[0]
     if kind == "one_time":
         dt = parsed[1]
@@ -307,7 +307,7 @@ async def cmd_rem(ctx, *, rest: str):
         _, wds, h, m = parsed
         await add_weekly(ctx.guild.id, ctx.channel.id, ctx.author.id, message, h, m, wds)
         days_str = ", ".join([list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)] for d in wds]) if wds else "N/A"
-        await ctx.send(f"🔁 Reminder berulang diset setiap **{wds}** jam **{h:02d}:{m:02d}** — {message}")
+        await ctx.send(f"🔁 Reminder berulang diset setiap **{days_str}** jam **{h:02d}:{m:02d}** — {message}")
     else:
         await ctx.send("❌ Format tidak dikenali.")
 
