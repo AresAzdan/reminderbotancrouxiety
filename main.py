@@ -278,9 +278,29 @@ async def cmd_rem(ctx, *, rest: str):
 
     # Parsing waktu dulu
     parsed = parse_date_flexible(rest)
-    if not parsed:
-        await ctx.send("❌ Gagal mengenali waktu. Contoh: `rem!rem 10 Oktober 20:00 meeting`")
+  if not parsed:
+    # --- Tambahan: deteksi jam saja ---
+    import re
+    from datetime import datetime, timedelta
+    import pytz
+
+    tz = pytz.timezone("Asia/Jakarta")
+    now = datetime.now(tz)
+
+    time_only = re.search(r'(\d{1,2})[:.](\d{2})', rest)
+    if time_only:
+        hour, minute = map(int, time_only.groups())
+        at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # kalau jam sudah lewat, pindah ke besok
+        if at < now:
+            at += timedelta(days=1)
+        message = rest[time_only.end():].strip()
+        kind = "one_time"
+    else:
+        await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
         return
+else:
+    at, kind, message = parsed
 
     # Cari posisi terakhir waktu/tanggal agar sisa teks jadi pesan
     match = time_regex.search(rest)
