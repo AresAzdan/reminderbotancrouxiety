@@ -294,7 +294,7 @@ if not parsed:
         if at < now:
             at += timedelta(days=1)
         message = rest[time_only.end():].strip()
-          kind = "one_time"
+        kind = "one_time"
     # ✅ Tambahan penting — tandai parsed agar sistem tahu parsing berhasil
           parsed = (kind, at, message)
     else:
