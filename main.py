@@ -277,16 +277,16 @@ async def cmd_rem(ctx, *, rest: str):
         return
 
     # Parsing waktu dulu
-  parsed = parse_date_flexible(rest)
-  if not parsed:
-    # --- Tambahan: deteksi jam saja ---
+    parsed = parse_date_flexible(rest)
+    if not parsed:
+        # --- Tambahan: deteksi jam saja ---
         import re
         from datetime import datetime, timedelta
         import pytz
-    
+
         tz = pytz.timezone("Asia/Jakarta")
         now = datetime.now(tz)
-    
+
         time_only = re.search(r'(\d{1,2})[:.](\d{2})', rest)
         if time_only:
             hour, minute = map(int, time_only.groups())
@@ -299,37 +299,58 @@ async def cmd_rem(ctx, *, rest: str):
         else:
             await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
             return
-else:
-    at, kind, message = parsed
-
-    # Cari posisi terakhir waktu/tanggal agar sisa teks jadi pesan
-    match = time_regex.search(rest)
-    cut_index = match.end() if match else 0
-
-    # Tambah pencarian nama bulan
-    for month_name in MONTH_MAP.keys():
-        idx = re.search(rf"\b{month_name}\b", rest, re.IGNORECASE)
-        if idx:
-            cut_index = max(cut_index, idx.end())
-
-    # Ambil sisa kalimat setelah waktu/bulan
-    message = rest[cut_index:].strip()
-    if not message:
-        message = "(tanpa pesan)"
-
-    kind = parsed[0]
-    if kind == "one_time":
-        dt = parsed[1]
-        await add_one_time(ctx.guild.id, ctx.channel.id, ctx.author.id, message, dt.replace(second=0, microsecond=0).isoformat())
-        human = dt.astimezone(TZ).strftime("%d %b %Y %H:%M")
-        await ctx.send(f"✅ Reminder sekali diset untuk **{human}** — {message}")
-    elif kind == "weekly":
-        _, wds, h, m = parsed
-        await add_weekly(ctx.guild.id, ctx.channel.id, ctx.author.id, message, h, m, wds)
-        days_str = ", ".join([list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)] for d in wds]) if wds else "N/A"
-        await ctx.send(f"🔁 Reminder berulang diset setiap **{days_str}** jam **{h:02d}:{m:02d}** — {message}")
     else:
-        await ctx.send("❌ Format tidak dikenali.")
+        at, kind, message = parsed
+
+        # Cari posisi terakhir waktu/tanggal agar sisa teks jadi pesan
+        match = time_regex.search(rest)
+        cut_index = match.end() if match else 0
+
+        # Tambah pencarian nama bulan
+        for month_name in MONTH_MAP.keys():
+            idx = re.search(rf"\b{month_name}\b", rest, re.IGNORECASE)
+            if idx:
+                cut_index = max(cut_index, idx.end())
+
+        # Ambil sisa kalimat setelah waktu/bulan
+        message = rest[cut_index:].strip()
+        if not message:
+            message = "(tanpa pesan)"
+
+        kind = parsed[0]
+        if kind == "one_time":
+            dt = parsed[1]
+            await add_one_time(
+                ctx.guild.id,
+                ctx.channel.id,
+                ctx.author.id,
+                message,
+                dt.replace(second=0, microsecond=0).isoformat(),
+            )
+            human = dt.astimezone(TZ).strftime("%d %b %Y %H:%M")
+            await ctx.send(f"✅ Reminder sekali diset untuk **{human}** — {message}")
+        elif kind == "weekly":
+            _, wds, h, m = parsed
+            await add_weekly(
+                ctx.guild.id,
+                ctx.channel.id,
+                ctx.author.id,
+                message,
+                h,
+                m,
+                wds,
+            )
+            days_str = ", ".join(
+                [
+                    list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)]
+                    for d in wds
+                ]
+            ) if wds else "N/A"
+            await ctx.send(
+                f"🔁 Reminder berulang diset setiap **{days_str}** jam **{h:02d}:{m:02d}** — {message}"
+            )
+        else:
+            await ctx.send("❌ Format tidak dikenali.")
 
 @bot.command(name="list", aliases=["show","all"])
 async def cmd_list(ctx):
