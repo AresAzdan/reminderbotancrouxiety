@@ -289,17 +289,17 @@ if not parsed:
     
     time_only = re.search(r'(\d{1,2})[:.](\d{2})', rest)
     if time_only:
-    hour, minute = map(int, time_only.groups())
-    at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-       if at < now:
-    at += timedelta(days=1)
-    message = rest[time_only.end():].strip()
-    kind = "one_time"
+        hour, minute = map(int, time_only.groups())
+        at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if at < now:
+            at += timedelta(days=1)
+        message = rest[time_only.end():].strip()
+          kind = "one_time"
     # ✅ Tambahan penting — tandai parsed agar sistem tahu parsing berhasil
-    parsed = (kind, at, message)
+          parsed = (kind, at, message)
     else:
-    await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
-    return
+          await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
+          return
 
     else:
         at, kind, message = parsed
