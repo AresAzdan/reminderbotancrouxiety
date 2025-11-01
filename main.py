@@ -1,201 +1,435 @@
+# main.py
 import os
+import re
 import json
+import aiosqlite
 import discord
 from discord.ext import commands, tasks
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, timedelta, time as dt_time
 import pytz
 from flask import Flask
 from threading import Thread
 
-# --- KONFIGURASI ---
-TOKEN = os.environ.get('reminder_bot')  # Ambil token dari Secrets
-TIMEZONE = pytz.timezone('Asia/Jakarta')
-DATA_FILE = "reminders.json"
+# -----------------------
+# Konfigurasi
+# -----------------------
+TOKEN = os.environ.get("reminder_bot")  # nama env var sesuai kesepakatan
+TZ = pytz.timezone("Asia/Jakarta")
+DB_FILE = "reminders.db"
 
-# --- INTENTS & SETUP ---
+# -----------------------
+# Intents & Bot setup
+# -----------------------
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=['rem!', 'Rem!', 'REM!'],
+bot = commands.Bot(command_prefix=["rem!", "Rem!", "REM!"],
                    intents=intents,
                    case_insensitive=True,
                    help_command=None)
 
-# --- DATA ---
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r") as f:
-        scheduled_reminders = json.load(f)
-else:
-    scheduled_reminders = {}
-
-DAY_MAP = {
-    "senin": 0,
-    "selasa": 1,
-    "rabu": 2,
-    "kamis": 3,
-    "jumat": 4,
-    "sabtu": 5,
-    "minggu": 6
+# -----------------------
+# Helper: month + weekday maps
+# -----------------------
+MONTH_MAP = {
+    # English full
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    # English abbr
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "sept": 9,
+    "oct": 10, "nov": 11, "dec": 12,
+    # Indonesian full
+    "januari": 1, "februari": 2, "maret": 3, "april": 4, "mei": 5, "juni": 6,
+    "juli": 7, "agustus": 8, "september": 9, "oktober": 10, "november": 11, "desember": 12,
+    # Indonesian abbr variations
+    "janv":1, "okt": 10, "okt.": 10, "des": 12, "sept":9, "oktober":10, "okt":10, "okt.":10
 }
 
+WEEKDAY_MAP = {
+    "monday": 0, "mon": 0, "senin": 0,
+    "tuesday": 1, "tue": 1, "selasa": 1,
+    "wednesday": 2, "wed": 2, "rabu": 2,
+    "thursday": 3, "thu": 3, "kamis": 3,
+    "friday": 4, "fri": 4, "jumat": 4, "jum":4,
+    "saturday": 5, "sat": 5, "sabtu": 5,
+    "sunday": 6, "sun": 6, "minggu": 6
+}
 
-def save_data():
-    with open(DATA_FILE, "w") as f:
-        json.dump(scheduled_reminders, f, indent=2)
+# -----------------------
+# DB helpers (aiosqlite)
+# -----------------------
+async def init_db():
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                dt_iso TEXT,            -- for one-time reminders (ISO in TZ)
+                hour INTEGER,           -- for weekly reminders
+                minute INTEGER,         -- for weekly reminders
+                weekdays TEXT,          -- JSON list of ints for weekly reminders
+                repeat INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.commit()
 
+async def add_one_time(guild_id, channel_id, user_id, message, dt_iso):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            INSERT INTO reminders (guild_id, channel_id, user_id, message, dt_iso, repeat, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+        """, (str(guild_id), channel_id, user_id, message, dt_iso, datetime.now(TZ).isoformat()))
+        await db.commit()
 
-# --- EVENT ---
-@bot.event
-async def on_ready():
-    check_scheduled_reminders.start()
-    print(f"✅ Bot sudah online sebagai {bot.user}")
+async def add_weekly(guild_id, channel_id, user_id, message, hour, minute, weekdays):
+    wd_json = json.dumps(weekdays)
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            INSERT INTO reminders (guild_id, channel_id, user_id, message, hour, minute, weekdays, repeat, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        """, (str(guild_id), channel_id, user_id, message, hour, minute, wd_json, datetime.now(TZ).isoformat()))
+        await db.commit()
 
+async def fetch_due_one_time(now_iso):
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT id, guild_id, channel_id, user_id, message FROM reminders WHERE dt_iso = ? AND repeat = 0", (now_iso,))
+        rows = await cur.fetchall()
+        return rows
 
-# --- LOOP REMINDER ---
+async def delete_reminder_by_id(rid):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("DELETE FROM reminders WHERE id = ?", (rid,))
+        await db.commit()
+
+async def fetch_weekly_for_time(hour, minute, weekday):
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT id, guild_id, channel_id, user_id, message, weekdays FROM reminders WHERE repeat = 1 AND hour = ? AND minute = ?", (hour, minute))
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            rid, guild_id, channel_id, user_id, message, weekdays_json = r
+            wds = json.loads(weekdays_json)
+            if weekday in wds:
+                result.append((rid, guild_id, channel_id, user_id, message))
+        return result
+
+# -----------------------
+# Parsing input
+# -----------------------
+time_regex = re.compile(r'(?P<h>\d{1,2}):(?P<m>\d{2})')
+
+def extract_time(text):
+    m = time_regex.search(text)
+    if not m:
+        return None, text
+    h = int(m.group('h')) % 24
+    minute = int(m.group('m')) % 60
+    # remove the time token from text
+    new_text = (text[:m.start()] + text[m.end():]).strip()
+    return (h, minute), new_text
+
+def find_month_in_tokens(tokens):
+    for i, t in enumerate(tokens):
+        key = t.lower().strip(",. ")
+        if key in MONTH_MAP:
+            return i, key
+    return None, None
+
+def parse_date_flexible(text):
+    """
+    Returns:
+      - ('one_time', dt) with tz-aware datetime in TZ
+      - ('weekly', [weekday_ints], hour, minute)
+      - ('time_only', hour, minute)
+      - None on fail
+    Acceptable input examples:
+      "10 Oktober 17:00", "Oktober 10 17:00", "17:00 10/10", "senin 17:00", "senin,rabu 08:30"
+    """
+    text = text.strip()
+    # normalize commas
+    text = text.replace("/", " ").replace("-", " ").replace(".", " ")
+    tokens = text.split()
+    # extract time first
+    time_part, rest = extract_time(text)
+    # rest tokens:
+    rest_tokens = rest.split()
+    # if rest contains weekday words
+    weekdays = []
+    for t in rest_tokens:
+        key = t.lower().strip(",")
+        if key in WEEKDAY_MAP:
+            weekdays.append(WEEKDAY_MAP[key])
+    if weekdays:
+        if time_part:
+            return ("weekly", weekdays, time_part[0], time_part[1])
+        else:
+            return None  # need a time with weekday
+    # try to find month name
+    idx, month_key = find_month_in_tokens(rest_tokens)
+    if idx is not None:
+        # expect day near it (either before or after)
+        # try day before
+        day = None
+        month = MONTH_MAP[month_key]
+        # look left
+        if idx - 1 >= 0:
+            try:
+                day_candidate = int(re.sub(r'\D','', rest_tokens[idx-1]))
+                day = day_candidate
+            except:
+                day = None
+        # look right
+        if day is None and idx + 1 < len(rest_tokens):
+            try:
+                day_candidate = int(re.sub(r'\D','', rest_tokens[idx+1]))
+                day = day_candidate
+            except:
+                day = None
+        if day is None:
+            return None
+        # build datetime
+        now = datetime.now(TZ)
+        year = now.year
+        dt = TZ.localize(datetime(year, month, day, *(time_part if time_part else (0,0))))
+        # if in past, bump year
+        if dt < now:
+            try:
+                dt = TZ.localize(datetime(year+1, month, day, *(time_part if time_part else (0,0))))
+            except:
+                pass
+        return ("one_time", dt)
+    # try numeric date like day month as numbers (e.g., 10 11)
+    nums = [int(t) for t in rest_tokens if t.isdigit()]
+    if nums:
+        # heuristics: if len(nums) >=1 and time exists -> treat first numeric as day
+        if time_part and nums:
+            day = nums[0]
+            # try to find month from remaining tokens or default to current month
+            month = datetime.now(TZ).month
+            now = datetime.now(TZ)
+            try:
+                dt = TZ.localize(datetime(now.year, month, day, time_part[0], time_part[1]))
+                if dt < now:
+                    dt = TZ.localize(datetime(now.year+1, month, day, time_part[0], time_part[1]))
+                return ("one_time", dt)
+            except:
+                pass
+    # if only time provided -> schedule today or tomorrow if time passed
+    if time_part and not rest_tokens:
+        now = datetime.now(TZ)
+        h, m = time_part
+        dt = TZ.localize(datetime(now.year, now.month, now.day, h, m))
+        if dt < now:
+            dt = dt + timedelta(days=1)
+        return ("one_time", dt)
+    return None
+
+# -----------------------
+# Background checker
+# -----------------------
 @tasks.loop(minutes=1)
-async def check_scheduled_reminders():
-    now = datetime.now(TIMEZONE)
-    current_time = now.time().replace(second=0, microsecond=0)
-    current_day = now.weekday()
+async def check_reminders_loop():
+    now = datetime.now(TZ)
+    # check one-time that match current minute
+    now_iso = now.replace(second=0, microsecond=0).isoformat()
+    rows = await fetch_due_one_time(now_iso)
+    for r in rows:
+        rid, guild_id, channel_id, user_id, message = r
+        guild = bot.get_guild(int(guild_id))
+        if not guild:
+            await delete_reminder_by_id(rid)
+            continue
+        channel = guild.get_channel(channel_id)
+        if channel:
+            await channel.send(f"⏰ <@{user_id}> {message}")
+        await delete_reminder_by_id(rid)
+    # check weekly
+    hour = now.hour
+    minute = now.minute
+    weekday = now.weekday()
+    weekly_rows = await fetch_weekly_for_time(hour, minute, weekday)
+    for rid, guild_id, channel_id, user_id, message in weekly_rows:
+        guild = bot.get_guild(int(guild_id))
+        if not guild:
+            continue
+        channel = guild.get_channel(channel_id)
+        if channel:
+            await channel.send(f"⏰ <@{user_id}> {message}")
 
-    for guild_id, reminders in scheduled_reminders.items():
-        for key, reminder in reminders.items():
-            jam = reminder["jam"]
-            menit = reminder["menit"]
-            pesan = reminder["pesan"]
-            channel_id = reminder["channel_id"]
-            hari = [DAY_MAP.get(d.lower(), -1) for d in reminder["hari"]]
-
-            if current_time.hour == jam and current_time.minute == menit and current_day in hari:
-                channel = bot.get_channel(channel_id)
-                if channel:
-                    await channel.send(f"⏰ **[REMINDER]** Sudah waktunya: **{pesan}**")
-
-
-# --- COMMANDS ---
+# -----------------------
+# Commands
+# -----------------------
 @bot.command(name="rem")
-async def reminder(ctx, waktu_hari, *, pesan: str):
-    """Buat reminder baru"""
-    guild_id = str(ctx.guild.id)
-    channel_id = ctx.channel.id
-
-    try:
-        waktu_split = waktu_hari.split(',')
-        waktu = waktu_split[0]
-        jam, menit = map(int, waktu.split(':'))
-        hari = waktu_split[1:] if len(waktu_split) > 1 else ["senin", "selasa", "rabu", "kamis", "jumat", "sabtu", "minggu"]
-    except:
-        await ctx.send("❌ Format salah. Contoh: `rem!rem 08:30,senin,rabu minum air`")
+async def cmd_rem(ctx, *, rest: str):
+    """
+    Usage:
+    rem!rem 08:30 minum air
+    rem!rem 10 Oktober 18:00 ulang tahun
+    rem!rem senin 08:00 olahraga
+    rem!rem 08:30,senin,rabu minum air  (if you type weekdays comma-separated after time)
+    """
+    # Only allow in guild
+    if ctx.guild is None:
+        await ctx.send("❌ Gunakan di server (tidak di DM).")
         return
+    # split message into first token (time/date) and message
+    parts = rest.strip().split(maxsplit=1)
+    if not parts:
+        await ctx.send("❌ Format salah. Contoh: `rem!rem 08:30 minum air`")
+        return
+    time_part = parts[0]
+    message = parts[1] if len(parts) > 1 else ""
+    # allow user to supply weekdays with commas in same token: "08:30,senin,rabu"
+    if "," in time_part:
+        toks = time_part.split(",")
+        time_token = toks[0]
+        extra_days = toks[1:]
+        # rebuild rest_text for parser: time + extra_days
+        parser_input = time_token + " " + " ".join(extra_days)
+    else:
+        # if user typed "senin,rabu 08:30" or "10 Oktober 18:00" time may be inside; pass full rest
+        parser_input = rest
+    parsed = parse_date_flexible(parser_input)
+    if not parsed:
+        await ctx.send("❌ Gagal mengenali waktu. Gunakan format: `08:30`, `10 Oktober 18:00`, `Oktober 10 17:00`, atau `senin 08:00`.")
+        return
+    kind = parsed[0]
+    if kind == "one_time":
+        dt = parsed[1]
+        await add_one_time(ctx.guild.id, ctx.channel.id, ctx.author.id, message, dt.replace(second=0, microsecond=0).isoformat())
+        human = dt.astimezone(TZ).strftime("%d %b %Y %H:%M")
+        await ctx.send(f"✅ Reminder sekali diset untuk **{human}** — {message}")
+    elif kind == "weekly":
+        _, wds, h, m = parsed
+        await add_weekly(ctx.guild.id, ctx.channel.id, ctx.author.id, message, h, m, wds)
+        days_str = ", ".join([list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)] for d in wds]) if wds else "N/A"
+        await ctx.send(f"🔁 Reminder berulang diset setiap **{wds}** jam **{h:02d}:{m:02d}** — {message}")
+    else:
+        await ctx.send("❌ Format tidak dikenali.")
 
-    if guild_id not in scheduled_reminders:
-        scheduled_reminders[guild_id] = {}
-
-    reminder_id = str(len(scheduled_reminders[guild_id]) + 1)
-    scheduled_reminders[guild_id][reminder_id] = {
-        "jam": jam,
-        "menit": menit,
-        "pesan": pesan,
-        "channel_id": channel_id,
-        "hari": hari
-    }
-    save_data()
-    await ctx.send(f"✅ Reminder ditambahkan: **{pesan}** pada **{waktu_hari}**")
-
-
-@bot.command(name="list")
-async def list_reminders(ctx):
-    """Lihat semua reminder"""
+@bot.command(name="list", aliases=["show","all"])
+async def cmd_list(ctx):
+    if ctx.guild is None:
+        await ctx.send("❌ Gunakan di server.")
+        return
     guild_id = str(ctx.guild.id)
-    if guild_id not in scheduled_reminders or not scheduled_reminders[guild_id]:
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT id, message, dt_iso, hour, minute, weekdays, repeat FROM reminders WHERE guild_id = ?", (guild_id,))
+        rows = await cur.fetchall()
+    if not rows:
         await ctx.send("📭 Tidak ada reminder aktif.")
         return
-
-    pesan = "🗓 **Daftar Reminder:**\n"
-    for i, (key, r) in enumerate(scheduled_reminders[guild_id].items(), start=1):
-        hari_text = ','.join(r['hari'])
-        pesan += f"{i}. {r['pesan']} - {r['jam']:02d}:{r['menit']:02d} ({hari_text})\n"
-
-    await ctx.send(pesan)
-
+    lines = []
+    for r in rows:
+        rid, message, dt_iso, hour, minute, weekdays_json, repeat = r
+        if repeat == 0 and dt_iso:
+            dt = datetime.fromisoformat(dt_iso).astimezone(TZ)
+            lines.append(f"{rid}. (once) {message} — {dt.strftime('%d %b %Y %H:%M')}")
+        else:
+            wds = json.loads(weekdays_json) if weekdays_json else []
+            lines.append(f"{rid}. (weekly) {message} — {hour:02d}:{minute:02d} on {wds}")
+    await ctx.send("🗒️ Daftar reminder:\n" + "\n".join(lines))
 
 @bot.command(name="edit")
-async def edit_reminder(ctx, nomor: int, waktu_hari, *, pesan_baru: str):
-    """Ubah reminder"""
-    guild_id = str(ctx.guild.id)
-    if guild_id not in scheduled_reminders or not scheduled_reminders[guild_id]:
-        await ctx.send("❌ Tidak ada reminder untuk diedit.")
+async def cmd_edit(ctx, rid: int, *, rest: str):
+    if ctx.guild is None:
+        await ctx.send("❌ Gunakan di server.")
         return
-
-    try:
-        reminder_key = list(scheduled_reminders[guild_id].keys())[nomor - 1]
-    except IndexError:
-        await ctx.send("❌ Nomor reminder tidak ditemukan.")
+    # get existing
+    async with aiosqlite.connect(DB_FILE) as db:
+        cur = await db.execute("SELECT id FROM reminders WHERE id = ? AND guild_id = ?", (rid, str(ctx.guild.id)))
+        row = await cur.fetchone()
+    if not row:
+        await ctx.send("❌ Reminder tidak ditemukan.")
         return
-
-    waktu_split = waktu_hari.split(',')
-    waktu = waktu_split[0]
-    jam, menit = map(int, waktu.split(':'))
-    hari = waktu_split[1:] if len(waktu_split) > 1 else ["senin", "selasa", "rabu", "kamis", "jumat", "sabtu", "minggu"]
-
-    scheduled_reminders[guild_id][reminder_key].update({
-        "jam": jam,
-        "menit": menit,
-        "pesan": pesan_baru,
-        "hari": hari
-    })
-    save_data()
-    await ctx.send(f"✏️ Reminder {nomor} diperbarui jadi: **{pesan_baru}** pada **{waktu_hari}**")
-
-
-@bot.command(name="hapus", aliases=["del", "delete"])
-async def delete_reminder(ctx, nomor: int):
-    """Hapus reminder"""
-    guild_id = str(ctx.guild.id)
-    if guild_id not in scheduled_reminders or not scheduled_reminders[guild_id]:
-        await ctx.send("❌ Tidak ada reminder untuk dihapus.")
+    # expect rest like: "10 Oktober 18:00 pesan baru" or "08:30,senin new msg"
+    parts = rest.strip().split(maxsplit=1)
+    if not parts:
+        await ctx.send("❌ Format salah.")
         return
+    parser_input = parts[0]
+    new_message = parts[1] if len(parts) > 1 else ""
+    if "," in parser_input:
+        toks = parser_input.split(",")
+        time_token = toks[0]
+        extra_days = toks[1:]
+        parser_input_full = time_token + " " + " ".join(extra_days)
+    else:
+        parser_input_full = rest
+    parsed = parse_date_flexible(parser_input_full)
+    if not parsed:
+        await ctx.send("❌ Gagal mengenali waktu.")
+        return
+    if parsed[0] == "one_time":
+        dt = parsed[1].replace(second=0, microsecond=0).isoformat()
+        async with aiosqlite.connect(DB_FILE) as db:
+            await db.execute("UPDATE reminders SET dt_iso = ?, hour = NULL, minute = NULL, weekdays = NULL, repeat = 0, message = ? WHERE id = ?",
+                             (dt, new_message, rid))
+            await db.commit()
+        await ctx.send(f"✏️ Reminder {rid} diperbarui ke {dt} — {new_message}")
+    else:  # weekly
+        _, wds, h, m = parsed
+        wd_json = json.dumps(wds)
+        async with aiosqlite.connect(DB_FILE) as db:
+            await db.execute("UPDATE reminders SET dt_iso = NULL, hour = ?, minute = ?, weekdays = ?, repeat = 1, message = ? WHERE id = ?",
+                             (h, m, wd_json, new_message, rid))
+            await db.commit()
+        await ctx.send(f"✏️ Reminder {rid} diperbarui ke weekly {wds} {h:02d}:{m:02d} — {new_message}")
 
-    try:
-        reminder_key = list(scheduled_reminders[guild_id].keys())[nomor - 1]
-        del scheduled_reminders[guild_id][reminder_key]
-        save_data()
-        await ctx.send(f"🗑 Reminder {nomor} telah dihapus.")
-    except IndexError:
-        await ctx.send("❌ Nomor reminder tidak ditemukan.")
-
+@bot.command(name="hapus", aliases=["del","delete","remove"])
+async def cmd_delete(ctx, rid: int):
+    if ctx.guild is None:
+        await ctx.send("❌ Gunakan di server.")
+        return
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("DELETE FROM reminders WHERE id = ? AND guild_id = ?", (rid, str(ctx.guild.id)))
+        await db.commit()
+    await ctx.send(f"🗑️ Reminder {rid} berhasil dihapus (kalau ada).")
 
 @bot.command(name="bantuan", aliases=["help"])
-async def help_command(ctx):
-    """Tampilkan panduan"""
-    teks = (
-        "📝 **Panduan ReminderBot**\n"
-        "`rem!rem <WAKTU> <PESAN>` - buat reminder\n"
-        "`rem!rem 08:30,senin,rabu minum air`\n"
-        "`rem!list` - lihat semua reminder\n"
-        "`rem!edit <NOMOR> <WAKTU,HARI> <PESAN>`\n"
-        "`rem!hapus <NOMOR>` - hapus reminder\n"
-    )
+async def cmd_help(ctx):
+    teks = ("📝 **Panduan Reminder**\n"
+            "`rem!rem <WAKTU/DATE> <PESAN>` contoh:\n"
+            "`rem!rem 08:30 minum air`\n"
+            "`rem!rem 10 Oktober 18:00 ulang tahun`\n"
+            "`rem!rem senin 08:00 olahraga`\n"
+            "`rem!list`\n"
+            "`rem!edit <ID> <WAKTU/DATE> <PESAN>`\n"
+            "`rem!hapus <ID>`\n")
     await ctx.send(teks)
 
-
-# --- FLASK KEEP ALIVE (untuk Render/Replit) ---
-app = Flask('')
-
-
-@app.route('/')
+# -----------------------
+# Startup
+# -----------------------
+@app.route("/")
 def home():
     return "Bot is alive!"
 
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
 
-def run():
-    app.run(host='0.0.0.0', port=5000)
+def start_keep_alive():
+    Thread(target=run_flask, daemon=True).start()
 
+@bot.event
+async def on_connect():
+    # init DB on connect (ensures file exists before tasks start)
+    await init_db()
 
-def keep_alive():
-    Thread(target=run).start()
+@bot.event
+async def on_ready():
+    # start the check loop if not already running
+    if not check_reminders_loop.is_running():
+        check_reminders_loop.start()
+    print(f"✅ Bot siap sebagai {bot.user}")
 
-
-# --- JALANKAN ---
-keep_alive()
-bot.run(TOKEN)
+# start flask keep-alive and run bot
+if __name__ == "__main__":
+    start_keep_alive()
+    if not TOKEN:
+        print("❌ TOKEN tidak ditemukan. Pastikan env var 'reminder_bot' terpasang.")
+    bot.run(TOKEN)
