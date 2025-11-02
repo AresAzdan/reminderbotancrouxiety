@@ -67,10 +67,10 @@ async def init_db():
                 channel_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 message TEXT NOT NULL,
-                dt_iso TEXT,            -- for one-time reminders (ISO in TZ)
-                hour INTEGER,           -- for weekly reminders
-                minute INTEGER,         -- for weekly reminders
-                weekdays TEXT,          -- JSON list of ints for weekly reminders
+                dt_iso TEXT,             -- for one-time reminders (ISO in TZ)
+                hour INTEGER,            -- for weekly reminders
+                minute INTEGER,          -- for weekly reminders
+                weekdays TEXT,           -- JSON list of ints for weekly reminders
                 repeat INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             )
@@ -120,14 +120,14 @@ async def fetch_weekly_for_time(hour, minute, weekday):
 # -----------------------
 # Parsing input
 # -----------------------
-time_regex = re.compile(r'(?P<h>\d{1,2}):(?P<m>\d{2})')
+time_regex = re.compile(r'(?P<h>\d{1,2})[:.](\d{2})') # Ubah regex agar lebih fleksibel
 
 def extract_time(text):
     m = time_regex.search(text)
     if not m:
         return None, text
-    h = int(m.group('h')) % 24
-    minute = int(m.group('m')) % 60
+    h = int(m.group(1)) % 24
+    minute = int(m.group(2)) % 60
     # remove the time token from text
     new_text = (text[:m.start()] + text[m.end():]).strip()
     return (h, minute), new_text
@@ -276,46 +276,63 @@ async def cmd_rem(ctx, *, rest: str):
         await ctx.send("❌ Gunakan di server (tidak di DM).")
         return
 
-# Parsing waktu dulu
-parsed = parse_date_flexible(rest)
-if not parsed:
-    # --- Tambahan: deteksi jam saja ---
-    import re
-    from datetime import datetime, timedelta
-    import pytz
+    # Parsing waktu dulu
+    parsed = parse_date_flexible(rest)
     
-    tz = pytz.timezone("Asia/Jakarta")
-    now = datetime.now(tz)
-    
-    time_only = re.search(r'(\d{1,2})[:.](\d{2})', rest)
-    if time_only:
-        hour, minute = map(int, time_only.groups())
-        at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if at < now:
-            at += timedelta(days=1)
-        message = rest[time_only.end():].strip()
-        kind = "one_time"
-    # ✅ Tambahan penting — tandai parsed agar sistem tahu parsing berhasil
-        parsed = (kind, at, message)
-        else:
-          await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
-          return
-      
-    if len(parsed) == 3:
-       at, kind, message = parsed
-    elif len(parsed) == 2:
-        at, kind = parsed
-        message = None
-          else:
-            await ctx.send("Format perintah salah. Gunakan: rem!rem [waktu] [pesan]")
+    # Kalo parse_date_flexible gagal, coba parse untuk jam saja (seperti kode aslimu)
+    if not parsed:
+        # --- Tambahan: deteksi jam saja ---
+        # NOTE: Impor di dalam fungsi/metode tidak dianjurkan, tapi aku biarkan dulu
+        # asalkan kode ini jalan. Seharusnya datetime, timedelta, dan pytz sudah diimpor di atas.
+        
+        # NOTE: re.search(r'(\d{1,2})[:.](\d{2})', rest) ini sudah ada di time_regex di atas.
+        # Lebih baik pakai time_regex.search(rest)
+        time_only = time_regex.search(rest) # Pakai time_regex yang sudah didefinisikan
+        
+        if time_only:
+            hour, minute = map(int, time_only.groups())
+            at = datetime.now(TZ).replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if at < datetime.now(TZ): # Pakai TZ yang sudah didefinisikan
+                at += timedelta(days=1)
+            message = rest[time_only.end():].strip()
+            kind = "one_time"
+            # ✅ Tambahan penting — tandai parsed agar sistem tahu parsing berhasil
+            parsed = (kind, at, message)
+        
+        # Ini adalah **perbaikan utama** di bagian if not parsed:
+        # Blok if time_only di atas, KALAU BERHASIL, akan mengisi variabel 'parsed'.
+        # Jika 'parsed' masih kosong (None) setelah mencoba deteksi jam, barulah kirim error.
+        if not parsed:
+            await ctx.send("❌ Gagal mengenali waktu. Contoh: 'rem!rem 18 Oktober 20:00 meeting'")
             return
+    
+    # KESALAHAN UTAMA DI SINI (Indentasi dan logika):
+    # Logika yang kamu pakai di bawah ini (if len(parsed) == 3:, elif len(parsed) == 2:, else:) 
+    # MENGASUMSIKAN parse_date_flexible MENGEMBALIKAN format (at, kind, message) atau (at, kind).
+    # Padahal parse_date_flexible MENGEMBALIKAN ('kind', dt) atau ('weekly', [wds], h, m).
+    # Aku ubah logikanya untuk mengikuti *output* dari `parse_date_flexible` / blok deteksi jam saja.
 
+    kind = parsed[0]
+    
+    # Ambil sisa kalimat setelah waktu/tanggal agar sisa teks jadi pesan
+    # Ini harusnya TIDAK PERLU lagi karena blok `if not parsed` sudah ambil message.
+    # Namun, karena `parse_date_flexible` tidak mengembalikan pesan, hanya waktu/tanggal,
+    # kita harus ambil pesan dari `rest` secara manual *kecuali* sudah diambil di blok deteksi jam.
 
+    # Kita cek dulu apakah `parsed` cuma berisi 2 elemen ('one_time', dt)
+    # atau 4 elemen ('weekly', wds, h, m).
+    # Kalau 3 elemen, berarti itu dari blok deteksi jam yang berhasil.
+    if kind == "one_time" and len(parsed) == 3: # Dari deteksi jam saja
+        dt = parsed[1]
+        message = parsed[2]
+    elif kind == "one_time" and len(parsed) == 2: # Dari parse_date_flexible
+        dt = parsed[1]
+        
         # Cari posisi terakhir waktu/tanggal agar sisa teks jadi pesan
         match = time_regex.search(rest)
         cut_index = match.end() if match else 0
 
-        # Tambah pencarian nama bulan
+        # Tambah pencarian nama bulan (dari kode kamu)
         for month_name in MONTH_MAP.keys():
             idx = re.search(rf"\b{month_name}\b", rest, re.IGNORECASE)
             if idx:
@@ -326,40 +343,73 @@ if not parsed:
         if not message:
             message = "(tanpa pesan)"
 
-        kind = parsed[0]
-        if kind == "one_time":
-            dt = parsed[1]
-            await add_one_time(
-                ctx.guild.id,
-                ctx.channel.id,
-                ctx.author.id,
-                message,
-                dt.replace(second=0, microsecond=0).isoformat(),
-            )
-            human = dt.astimezone(TZ).strftime("%d %b %Y %H:%M")
-            await ctx.send(f"✅ Reminder sekali diset untuk **{human}** — {message}")
-        elif kind == "weekly":
-            _, wds, h, m = parsed
-            await add_weekly(
-                ctx.guild.id,
-                ctx.channel.id,
-                ctx.author.id,
-                message,
-                h,
-                m,
-                wds,
-            )
-            days_str = ", ".join(
-                [
-                    list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)]
-                    for d in wds
-                ]
-            ) if wds else "N/A"
-            await ctx.send(
-                f"🔁 Reminder berulang diset setiap **{days_str}** jam **{h:02d}:{m:02d}** — {message}"
-            )
-        else:
-            await ctx.send("❌ Format tidak dikenali.")
+    elif kind == "weekly": # Dari parse_date_flexible
+        _, wds, h, m = parsed
+        
+        # Ambil pesan. Karena `rest` sudah dikurangi waktu/hari di `parse_date_flexible`,
+        # kita harus menghitung ulang sisa teksnya.
+        # Lebih aman ambil pesan dari sisa string `rest` yang tidak ter-*parse*.
+        
+        # Cari posisi terakhir token waktu/hari yang ter-*parse*
+        # Ini bisa kompleks karena parse_date_flexible membuang token waktu/tanggal.
+        # Untuk kasus weekly, kita asumsikan pesan adalah sisa dari rest setelah waktu dan hari.
+        
+        # Simplifikasi: ambil sisa string *rest* setelah token waktu/tanggal yang berhasil di-parse
+        # Ini butuh logika parsing yang lebih detail, tapi untuk sekarang:
+        # Kita pakai saja logika `if kind == "one_time" and len(parsed) == 2:` di atas.
+        
+        # UNTUK WEEKLY, pesan adalah sisa dari `rest` setelah token waktu & hari.
+        time_part, rest_after_time = extract_time(rest)
+        weekdays_in_rest = [k for k in WEEKDAY_MAP.keys() if k in rest_after_time.lower()]
+        
+        # Hapus semua token hari yang ditemukan
+        message = rest_after_time
+        for day in weekdays_in_rest:
+            message = re.sub(r'\b'+day+r'\b', '', message, flags=re.IGNORECASE).strip()
+            
+        message = message.strip().strip(",. ")
+        if not message:
+            message = "(tanpa pesan)"
+            
+    else:
+        # Seharusnya tidak terjadi, karena sudah dicek di awal
+        await ctx.send("❌ Format tidak dikenali.")
+        return
+
+
+    # Pengecekan akhir dan penambahan ke DB
+    if kind == "one_time":
+        await add_one_time(
+            ctx.guild.id,
+            ctx.channel.id,
+            ctx.author.id,
+            message,
+            dt.replace(second=0, microsecond=0).isoformat(),
+        )
+        human = dt.astimezone(TZ).strftime("%d %b %Y %H:%M")
+        await ctx.send(f"✅ Reminder sekali diset untuk **{human}** — {message}")
+    elif kind == "weekly":
+        await add_weekly(
+            ctx.guild.id,
+            ctx.channel.id,
+            ctx.author.id,
+            message,
+            h,
+            m,
+            wds,
+        )
+        days_str = ", ".join(
+            [
+                # Ini harusnya lebih robust untuk ambil nama hari
+                list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)]
+                for d in wds
+            ]
+        ) if wds else "N/A"
+        await ctx.send(
+            f"🔁 Reminder berulang diset setiap **{days_str.title()}** jam **{h:02d}:{m:02d}** — {message}"
+        )
+    else:
+        await ctx.send("❌ Format tidak dikenali.")
 
 @bot.command(name="list", aliases=["show","all"])
 async def cmd_list(ctx):
@@ -381,7 +431,9 @@ async def cmd_list(ctx):
             lines.append(f"{rid}. (once) {message} — {dt.strftime('%d %b %Y %H:%M')}")
         else:
             wds = json.loads(weekdays_json) if weekdays_json else []
-            lines.append(f"{rid}. (weekly) {message} — {hour:02d}:{minute:02d} on {wds}")
+            # Ubah untuk menampilkan nama hari yang lebih bagus
+            days_names = [list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)] for d in wds]
+            lines.append(f"{rid}. (weekly) {message} — {hour:02d}:{minute:02d} on {', '.join(days_names).title()}")
     await ctx.send("🗒️ Daftar reminder:\n" + "\n".join(lines))
 
 @bot.command(name="edit")
@@ -397,30 +449,63 @@ async def cmd_edit(ctx, rid: int, *, rest: str):
         await ctx.send("❌ Reminder tidak ditemukan.")
         return
     # expect rest like: "10 Oktober 18:00 pesan baru" or "08:30,senin new msg"
-    parts = rest.strip().split(maxsplit=1)
-    if not parts:
-        await ctx.send("❌ Format salah.")
-        return
-    parser_input = parts[0]
-    new_message = parts[1] if len(parts) > 1 else ""
-    if "," in parser_input:
-        toks = parser_input.split(",")
-        time_token = toks[0]
-        extra_days = toks[1:]
-        parser_input_full = time_token + " " + " ".join(extra_days)
-    else:
-        parser_input_full = rest
+    
+    # PERBAIKAN: Logika parsing di sini terlalu kompleks. Kita panggil ulang parse_date_flexible
+    # untuk mendapatkan info waktu/hari, dan sisa stringnya diasumsikan sebagai pesan baru.
+    
+    # Kita pisahkan dulu waktu/tanggal dari pesan. Ini tricky karena pesan bisa ada angka.
+    # Asumsi: Waktu/Tanggal selalu di awal.
+    parser_input_full = rest
+    new_message = ""
     parsed = parse_date_flexible(parser_input_full)
+
+    if parsed:
+        # Coba lagi: ambil pesan sisa. Karena parse_date_flexible hanya mengembalikan waktu/hari.
+        time_token, rest_after_time = extract_time(rest)
+
+        # Jika ada waktu, kita coba ambil pesan dari sisa setelah waktu dan hari/bulan
+        if time_token:
+            if parsed[0] == "one_time":
+                # Cari posisi terakhir tanggal/bulan
+                match = time_regex.search(rest)
+                cut_index = match.end() if match else 0
+                for month_name in MONTH_MAP.keys():
+                    idx = re.search(rf"\b{month_name}\b", rest, re.IGNORECASE)
+                    if idx:
+                        cut_index = max(cut_index, idx.end())
+                new_message = rest[cut_index:].strip()
+                
+            elif parsed[0] == "weekly":
+                # Sama seperti di cmd_rem, kita hapus token hari
+                weekdays_in_rest = [k for k in WEEKDAY_MAP.keys() if k in rest_after_time.lower()]
+                new_message = rest_after_time
+                for day in weekdays_in_rest:
+                    new_message = re.sub(r'\b'+day+r'\b', '', new_message, flags=re.IGNORECASE).strip()
+                new_message = new_message.strip().strip(",. ")
+            
+            if not new_message:
+                new_message = "(tanpa pesan)"
+        else:
+             # Tidak ada waktu/tanggal yang valid, mungkin user cuma mau ubah pesan?
+             # Tapi command edit ini harusnya selalu ubah waktu/pesan.
+             # Kita anggap seluruh rest adalah pesan baru jika parse_date_flexible gagal.
+             new_message = rest.strip()
+             parsed = None # Biar masuk ke error
+
     if not parsed:
-        await ctx.send("❌ Gagal mengenali waktu.")
+        await ctx.send("❌ Gagal mengenali format waktu/hari baru. Pastikan format: `ID <WAKTU/DATE> <PESAN>`")
         return
+        
+    # --- Update DB ---
+    
     if parsed[0] == "one_time":
         dt = parsed[1].replace(second=0, microsecond=0).isoformat()
         async with aiosqlite.connect(DB_FILE) as db:
             await db.execute("UPDATE reminders SET dt_iso = ?, hour = NULL, minute = NULL, weekdays = NULL, repeat = 0, message = ? WHERE id = ?",
                              (dt, new_message, rid))
             await db.commit()
-        await ctx.send(f"✏️ Reminder {rid} diperbarui ke {dt} — {new_message}")
+        human = datetime.fromisoformat(dt).astimezone(TZ).strftime("%d %b %Y %H:%M")
+        await ctx.send(f"✏️ Reminder **{rid}** diperbarui ke **{human}** — {new_message}")
     else:  # weekly
         _, wds, h, m = parsed
         wd_json = json.dumps(wds)
@@ -428,7 +513,14 @@ async def cmd_edit(ctx, rid: int, *, rest: str):
             await db.execute("UPDATE reminders SET dt_iso = NULL, hour = ?, minute = ?, weekdays = ?, repeat = 1, message = ? WHERE id = ?",
                              (h, m, wd_json, new_message, rid))
             await db.commit()
-        await ctx.send(f"✏️ Reminder {rid} diperbarui ke weekly {wds} {h:02d}:{m:02d} — {new_message}")
+        days_str = ", ".join(
+            [
+                list(WEEKDAY_MAP.keys())[list(WEEKDAY_MAP.values()).index(d)]
+                for d in wds
+            ]
+        ) if wds else "N/A"
+        await ctx.send(f"✏️ Reminder **{rid}** diperbarui ke weekly **{days_str.title()}** {h:02d}:{m:02d} — {new_message}")
+
 
 @bot.command(name="hapus", aliases=["del","delete","remove"])
 async def cmd_delete(ctx, rid: int):
@@ -436,20 +528,28 @@ async def cmd_delete(ctx, rid: int):
         await ctx.send("❌ Gunakan di server.")
         return
     async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("DELETE FROM reminders WHERE id = ? AND guild_id = ?", (rid, str(ctx.guild.id)))
+        cur = await db.execute("DELETE FROM reminders WHERE id = ? AND guild_id = ?", (rid, str(ctx.guild.id)))
+        # Cek apakah ada baris yang terhapus
+        rows_deleted = cur.rowcount
         await db.commit()
-    await ctx.send(f"🗑️ Reminder {rid} berhasil dihapus (kalau ada).")
+    if rows_deleted > 0:
+        await ctx.send(f"🗑️ Reminder **{rid}** berhasil dihapus.")
+    else:
+        await ctx.send(f"❌ Reminder **{rid}** tidak ditemukan di server ini.")
 
 @bot.command(name="bantuan", aliases=["help"])
 async def cmd_help(ctx):
     teks = ("📝 **Panduan Reminder**\n"
+            "Gunakan salah satu prefix: `rem!`, `Rem!`, atau `REM!`\n"
+            "**Membuat:**\n"
             "`rem!rem <WAKTU/DATE> <PESAN>` contoh:\n"
-            "`rem!rem 08:30 minum air`\n"
-            "`rem!rem 10 Oktober 18:00 ulang tahun`\n"
-            "`rem!rem senin 08:00 olahraga`\n"
-            "`rem!list`\n"
-            "`rem!edit <ID> <WAKTU/DATE> <PESAN>`\n"
-            "`rem!hapus <ID>`\n")
+            "   `rem!rem 08:30 minum air`\n"
+            "   `rem!rem 10 Oktober 18:00 ulang tahun`\n"
+            "   `rem!rem senin 08:00 olahraga`\n"
+            "**Mengelola:**\n"
+            "`rem!list` (Lihat semua reminder)\n"
+            "`rem!edit <ID> <WAKTU/DATE> <PESAN>` (Ubah reminder)\n"
+            "`rem!hapus <ID>` (Hapus reminder)\n")
     await ctx.send(teks)
 
 # -----------------------
